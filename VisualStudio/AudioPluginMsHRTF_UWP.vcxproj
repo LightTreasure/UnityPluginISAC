@@ -56,83 +56,84 @@
     <Keyword>Win32Proj</Keyword>
     <TargetPlatformVersion>
     </TargetPlatformVersion>
-    <WindowsTargetPlatformVersion>10.0.10240.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.16252.0</WindowsTargetPlatformVersion>
     <ApplicationType>Windows Store</ApplicationType>
     <ApplicationTypeRevision>10.0</ApplicationTypeRevision>
     <MinimumVisualStudioVersion>14.0</MinimumVisualStudioVersion>
     <AppContainerApplication>true</AppContainerApplication>
+    <WindowsTargetPlatformMinVersion>10.0.16252.0</WindowsTargetPlatformMinVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <CharacterSet>NotSet</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v141</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <CharacterSet>NotSet</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v141</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Master|Win32'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <CharacterSet>NotSet</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v141</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Master|ARM'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <CharacterSet>NotSet</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v141</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release -DLL|Win32'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <CharacterSet>NotSet</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v141</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release -DLL|ARM'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <CharacterSet>NotSet</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v141</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <CharacterSet>NotSet</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v141</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Master|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <CharacterSet>NotSet</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v141</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release -DLL|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <CharacterSet>NotSet</CharacterSet>
     <WholeProgramOptimization>true</WholeProgramOptimization>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v141</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <CharacterSet>Unicode</CharacterSet>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v141</PlatformToolset>
     <WindowsAppContainer>false</WindowsAppContainer>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <CharacterSet>Unicode</CharacterSet>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v141</PlatformToolset>
     <WindowsAppContainer>false</WindowsAppContainer>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <CharacterSet>NotSet</CharacterSet>
-    <PlatformToolset>v140</PlatformToolset>
+    <PlatformToolset>v141</PlatformToolset>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
@@ -220,7 +221,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_USRDLL;AudioPluginDemo_EXPORTS;WINAPI_FAMILY=WINAPI_FAMILY_APP;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;UWPBUILD;_DEBUG;_WINDOWS;_USRDLL;AudioPluginDemo_EXPORTS;WINAPI_FAMILY=WINAPI_FAMILY_APP;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <MinimalRebuild>true</MinimalRebuild>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
@@ -234,7 +235,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <SubSystem>Windows</SubSystem>
       <TargetMachine>MachineX86</TargetMachine>
-      <AdditionalDependencies>mincore.lib;hrtfapo.lib;xaudio2.lib;</AdditionalDependencies>
+      <AdditionalDependencies>mincore.lib;</AdditionalDependencies>
       <AdditionalLibraryDirectories>..\</AdditionalLibraryDirectories>
       <IgnoreSpecificDefaultLibraries>kernel32.lib; ole32.lib; system32.lib;</IgnoreSpecificDefaultLibraries>
       <AdditionalOptions>/VERBOSE %(AdditionalOptions)</AdditionalOptions>
@@ -247,7 +248,7 @@ copy $(TargetPath) ..\..\x86\debug\$(TargetName).dll</Command>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">
     <ClCompile>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_USRDLL;AudioPluginDemo_EXPORTS;WINAPI_FAMILY=WINAPI_FAMILY_APP;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;UWPBUILD;_DEBUG;_WINDOWS;_USRDLL;AudioPluginDemo_EXPORTS;WINAPI_FAMILY=WINAPI_FAMILY_APP;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <MinimalRebuild>true</MinimalRebuild>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
@@ -260,7 +261,7 @@ copy $(TargetPath) ..\..\x86\debug\$(TargetName).dll</Command>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <SubSystem>Windows</SubSystem>
-      <AdditionalDependencies>mincore.lib;hrtfapo.lib;xaudio2.lib;</AdditionalDependencies>
+      <AdditionalDependencies>mincore.lib;</AdditionalDependencies>
       <AdditionalLibraryDirectories>..\</AdditionalLibraryDirectories>
       <IgnoreSpecificDefaultLibraries>kernel32.lib; ole32.lib; system32.lib;</IgnoreSpecificDefaultLibraries>
       <AdditionalOptions>/VERBOSE %(AdditionalOptions)</AdditionalOptions>
@@ -273,7 +274,7 @@ copy $(TargetPath) ..\..\x86\debug\$(TargetName).dll</Command>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_USRDLL;AudioPluginDemo_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;UWPBUILD;_DEBUG;_WINDOWS;_USRDLL;AudioPluginDemo_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <PrecompiledHeader>
@@ -297,13 +298,13 @@ copy /y "$(TargetPath)" "..\..\Assets\Plugins\x86_64\$(TargetName).dll"
     <ClCompile>
       <Optimization>MaxSpeed</Optimization>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;AudioPluginDemo_EXPORTS;WINAPI_FAMILY=WINAPI_FAMILY_APP;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <PreprocessorDefinitions>WIN32;UWPBUILD;NDEBUG;_WINDOWS;_USRDLL;AudioPluginDemo_EXPORTS;WINAPI_FAMILY=WINAPI_FAMILY_APP;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <PrecompiledHeader>
       </PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
-      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
       <WholeProgramOptimization>false</WholeProgramOptimization>
     </ClCompile>
     <Link>
@@ -312,7 +313,7 @@ copy /y "$(TargetPath)" "..\..\Assets\Plugins\x86_64\$(TargetName).dll"
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <TargetMachine>MachineX86</TargetMachine>
-      <AdditionalDependencies>mincore.lib;hrtfapo.lib;xaudio2.lib</AdditionalDependencies>
+      <AdditionalDependencies>mincore.lib;mmdevapi.lib;</AdditionalDependencies>
       <AdditionalLibraryDirectories>..\</AdditionalLibraryDirectories>
       <IgnoreSpecificDefaultLibraries>kernel32.lib; ole32.lib; system32.lib;</IgnoreSpecificDefaultLibraries>
     </Link>
@@ -325,7 +326,7 @@ copy $(TargetPath) ..\..\x86\release\$(TargetName).dll</Command>
     <ClCompile>
       <Optimization>MaxSpeed</Optimization>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;AudioPluginDemo_EXPORTS;WINAPI_FAMILY=WINAPI_FAMILY_APP;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;UWPBUILD;NDEBUG;_WINDOWS;_USRDLL;AudioPluginDemo_EXPORTS;WINAPI_FAMILY=WINAPI_FAMILY_APP;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <PrecompiledHeader>
@@ -339,7 +340,7 @@ copy $(TargetPath) ..\..\x86\release\$(TargetName).dll</Command>
       <SubSystem>Windows</SubSystem>
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
-      <AdditionalDependencies>mincore.lib;hrtfapo.lib;xaudio2.lib</AdditionalDependencies>
+      <AdditionalDependencies>mincore.lib;</AdditionalDependencies>
       <AdditionalLibraryDirectories>..\</AdditionalLibraryDirectories>
       <IgnoreSpecificDefaultLibraries>kernel32.lib; ole32.lib; system32.lib;</IgnoreSpecificDefaultLibraries>
     </Link>
@@ -352,7 +353,7 @@ copy $(TargetPath) ..\..\x86\release\$(TargetName).dll</Command>
     <ClCompile>
       <Optimization>MaxSpeed</Optimization>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;AudioPluginDemo_EXPORTS;WINAPI_FAMILY=WINAPI_FAMILY_APP;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;UWPBUILD;NDEBUG;_WINDOWS;_USRDLL;AudioPluginDemo_EXPORTS;WINAPI_FAMILY=WINAPI_FAMILY_APP;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <PrecompiledHeader>
@@ -382,7 +383,7 @@ copy $(TargetPath) ..\..\x86\master\$(TargetName).dll</Command>
     <ClCompile>
       <Optimization>MaxSpeed</Optimization>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;AudioPluginDemo_EXPORTS;WINAPI_FAMILY=WINAPI_FAMILY_APP;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;UWPBUILD;NDEBUG;_WINDOWS;_USRDLL;AudioPluginDemo_EXPORTS;WINAPI_FAMILY=WINAPI_FAMILY_APP;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <PrecompiledHeader>
@@ -411,7 +412,7 @@ copy $(TargetPath) ..\..\x86\master\$(TargetName).dll</Command>
     <ClCompile>
       <Optimization>MaxSpeed</Optimization>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;AudioPluginDemo_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;UWPBUILD;NDEBUG;_WINDOWS;_USRDLL;AudioPluginDemo_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <PrecompiledHeader>
@@ -439,7 +440,7 @@ copy $(TargetPath) ..\..\x86\master\$(TargetName).dll</Command>
     <ClCompile>
       <Optimization>MaxSpeed</Optimization>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;AudioPluginDemo_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;UWPBUILD;NDEBUG;_WINDOWS;_USRDLL;AudioPluginDemo_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <PrecompiledHeader>
@@ -466,20 +467,21 @@ copy $(TargetPath) ..\..\x86\master\$(TargetName).dll</Command>
     <ClCompile>
       <Optimization>MaxSpeed</Optimization>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;AudioPluginDemo_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <PreprocessorDefinitions>WIN32;UWPBUILD;NDEBUG;_WINDOWS;_USRDLL;AudioPluginDemo_EXPORTS;WINAPI_FAMILY=WINAPI_FAMILY_APP;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <PrecompiledHeader>
       </PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <WholeProgramOptimization>false</WholeProgramOptimization>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <SubSystem>Windows</SubSystem>
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
-      <AdditionalDependencies>kernel32.lib;user32.lib;hrtfapox64.lib;</AdditionalDependencies>
+      <AdditionalDependencies>mincore.lib;mmdevapi.lib;</AdditionalDependencies>
       <AdditionalLibraryDirectories>..\</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
@@ -492,7 +494,7 @@ copy /y "$(TargetPath)" "..\..\Assets\Plugins\x86_64\$(TargetName).dll"
     <ClCompile>
       <Optimization>MaxSpeed</Optimization>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;AudioPluginDemo_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;UWPBUILD;NDEBUG;_WINDOWS;_USRDLL;AudioPluginDemo_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <PrecompiledHeader>
@@ -518,7 +520,7 @@ copy /y "$(TargetPath)" "..\..\Assets\Plugins\x86_64\$(TargetName).dll"
     <ClCompile>
       <Optimization>MaxSpeed</Optimization>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;AudioPluginDemo_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;UWPBUILD;NDEBUG;_WINDOWS;_USRDLL;AudioPluginDemo_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <PrecompiledHeader>
@@ -551,9 +553,6 @@ copy /y "$(TargetPath)" "..\..\Assets\Plugins\x86_64\$(TargetName).dll"
     <ClInclude Include="..\AudioPluginInterface.h" />
     <ClInclude Include="..\AudioPluginUtil.h" />
     <ClInclude Include="..\PluginList.h" />
-  </ItemGroup>
-  <ItemGroup>
-    <Library Include="C:\Program Files (x86)\Windows Kits\10\Lib\10.0.10240.0\um\arm\hrtfapo.lib" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

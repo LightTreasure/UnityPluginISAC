@@ -5,7 +5,6 @@
 #include "hrtfapoapi.h"
 #include <DirectXMath.h>
 
-#include "spatialaudioclient.h"
 #include <stdint.h>
 #include <objbase.h>
 #include <memory>
@@ -24,6 +23,7 @@
 #include <memory>
 #include <vector>
 #include <list>
+#include <iostream>
 
 using namespace Microsoft::WRL;
 
@@ -41,7 +41,8 @@ namespace MSHRTFSpatializer
 	const int REQUIREDSAMPLERATE = 48000;
 	UINT32 frameCount=NULL;
 
-#define ISACCALLBACKBUFSIZE 96000
+#define ISACCALLBACKBUFSIZE 48000
+#define EMPTY_COUNT_LIMIT 5
 
 	enum
 	{
@@ -54,10 +55,11 @@ namespace MSHRTFSpatializer
 		P_NUM
 	};
 
-	struct ISACAudioObjectData
+	struct UnityAudioData
 	{
-		BOOL	m_isActive = FALSE;
-		float	m_dataBuf[ISACCALLBACKBUFSIZE];
+		float p[P_NUM];
+
+		float	m_dataBuf [ISACCALLBACKBUFSIZE];
 		float	m_dataPosX[ISACCALLBACKBUFSIZE];
 		float	m_dataPosY[ISACCALLBACKBUFSIZE];
 		float	m_dataPosZ[ISACCALLBACKBUFSIZE];
@@ -66,14 +68,23 @@ namespace MSHRTFSpatializer
 		UINT32	m_writeIndex = 0;
 		BOOL	m_writeIndexOverflowed = FALSE;
 
-		ComPtr<ISpatialAudioObject> object = nullptr;
+		UINT32  m_EmptyCount = 0;
+
+		BOOL	m_InQueue = FALSE;
+		std::list<UnityAudioData *>::iterator iter;
+
+		HANDLE  m_lock = nullptr;
 	};
 
-	struct UnityAudioObjectData
-	{
-		float p[P_NUM];
-		int ObjectIndex = -1;
-	};
+	/* OBJECTS USED TO COMMUNICSTE BETWEEN UNITY AND ISAC */
+	UINT32 g_ISACObjectCount = 0;
+	HANDLE g_ISACObjectCountMutex = nullptr;
+
+	std::list<UnityAudioData *> g_UnityAudioObjectQueue;
+	HANDLE g_QueueMutex;
+
+	std::vector<ComPtr<ISpatialAudioObject>> g_ISACObjectVector;
+	HANDLE g_ISACObjectVectorMutex = nullptr;
 
 	/* ISAC VARIABLES */
 	IMMDevice* g_pDevice = NULL;
@@ -82,15 +93,20 @@ namespace MSHRTFSpatializer
 	ComPtr<ISpatialAudioClient> g_SpatialAudioClient;
 	HANDLE g_ISACBufferCompletionEvent;
 
-	/* OBJECT VARIABLES */
-	ISACAudioObjectData* g_AudioObjectArray = nullptr;  // <-- needs  mutex protection
-	UINT32 g_NumAudioObjects = 0;
-	std::list<UINT32> g_FreeISACAudioObjectIndices; // Array of indices of Audio Objects that haven't been used yet <-- needs  mutex protection
-	std::list<UINT32> g_UsedISACAudioObjectIndices; // Array of indices of Audio Objects that are being used <-- needs  mutex protection
-
+	/* STATE TRACKING VARIABLES */
 	BOOL g_FirstCreateCallback = TRUE;
+	BOOL g_SpatialAudioClientCreated = FALSE;
 
-	std::list<UnityAudioObjectData*> g_ISACObjectWaitList; // <-- needs mutex protection
+	// This GUID uniquely identifies a Middleware Stack. WWise, FMod etc each will need to have their own GUID
+	// that should never change.
+	// We will log this value as part of spatial audio client telemetry; and map the GUIDs to middleware
+	// while processing the telemetry, so we can filter telemetry by middleware.
+	const GUID UNITY_ISAC_MIDDLEWARE_ID = { 0xe07049bc, 0xa91e, 0x489d,{ 0xad, 0xeb, 0xb1, 0x70, 0xa4, 0xa, 0x30, 0x6f } };
+
+	// Middleware can use up to 4 integers to pass the version info
+	const int MAJOR_VERSION = 0;
+	const int MINOR_VERSION1 = 2;
+	const int MINOR_VERSION2 = 0;
 
 	/* MUTEXES */
 	HANDLE g_ObjListsMutex = nullptr;
@@ -139,94 +155,455 @@ namespace MSHRTFSpatializer
 				continue;
 			}
 
-			// NOW GRAB THE LISTS MUTEX
-			DWORD dwWaitResult = WaitForSingleObject(g_ObjListsMutex, INFINITE); //TODO: Maybe a different timeout interval?
+			std::list<UnityAudioData *> RemoveQueue;
 
-			if (dwWaitResult == WAIT_OBJECT_0)	
-			{
-				UINT32 frameCount;
-				UINT32 availableObjectCount;
-
-				hr = g_SpatialAudioStream->BeginUpdatingAudioObjects(
-					&availableObjectCount,
-					&frameCount);
-
-				// GO THROUGH THE USED ISAC OBJECTS LIST AND COPY OVER DATA TO ISAC
-				for (std::list<UINT32>::iterator iter = g_UsedISACAudioObjectIndices.begin(); iter != g_UsedISACAudioObjectIndices.end(); iter++)
+			// Grab the ISACObjectsVector Mutex NOT NEEDED REMOVE
+			DWORD dwWaitResult = WaitForSingleObject(g_ISACObjectVectorMutex, INFINITE);
+				if (dwWaitResult == WAIT_OBJECT_0)	
 				{
-					ISACAudioObjectData* isacObjData = g_AudioObjectArray + *iter;
+					// Get the Current Queue
+					std::list<UnityAudioData *> LocalCopyOfQueue;
 
-					UINT32 actualWriteIndex = isacObjData->m_writeIndexOverflowed ? isacObjData->m_writeIndex + ISACCALLBACKBUFSIZE : isacObjData->m_writeIndex;
+					DWORD dwWaitResult = WaitForSingleObject(g_QueueMutex, INFINITE); // TODO: CHOOSE A TIMEOUT
+						if (dwWaitResult == WAIT_OBJECT_0)
+						{
+							// Make a local copy of the queue
+							LocalCopyOfQueue = g_UnityAudioObjectQueue;
+						}
+						else if (dwWaitResult == WAIT_ABANDONED)
+						{
+							// Not sure what to do here
+						}
+					ReleaseMutex(g_QueueMutex);
 
-					// TODO: change 480, 4, and 1920 in the following code to #def'd variables
-					BOOL enoughData = (actualWriteIndex - isacObjData->m_readIndex) >= 480;
+					UINT32 frameCount;
+					UINT32 availableObjectCount;
 
-					//Get the object buffer
-					BYTE* buffer = nullptr;
-					UINT32 bytecount;
-					hr = isacObjData->object->GetBuffer(&buffer, &bytecount);
+					UINT32 ISACObjInx = 0;
+
+					hr = g_SpatialAudioStream->BeginUpdatingAudioObjects(
+						&availableObjectCount,
+						&frameCount);
+				
+					// Go through the current read queue and copy data to ISAC Objects, if available
+					for (std::list<UnityAudioData*>::iterator iter = LocalCopyOfQueue.begin(); iter != LocalCopyOfQueue.end(); iter++)
+					{
+						UnityAudioData *objData = *iter;
+
+						// Defensive check
+						if (ISACObjInx >= availableObjectCount)
+						{
+							continue;
+						}
+
+						ComPtr<ISpatialAudioObject> &objISAC = g_ISACObjectVector[ISACObjInx];
+						ISACObjInx++;
+					
+						if (objISAC == nullptr)
+						{
+							hr = g_SpatialAudioStream->ActivateSpatialAudioObject(
+								AudioObjectType_Dynamic,
+								&objISAC);
+							if (FAILED(hr))
+							{
+								continue;
+							}
+						}
+
+						BOOL isactive = FALSE;
+						objISAC->IsActive(&isactive);
+						if (!isactive)
+						{
+							objISAC = nullptr;
+
+							hr = g_SpatialAudioStream->ActivateSpatialAudioObject(
+								AudioObjectType_Dynamic,
+								&objISAC);
+							if (FAILED(hr))
+							{
+								continue;
+							}
+						}
+					
+
+						DWORD dwWaitResultIn = WaitForSingleObject(objData->m_lock, INFINITE);
+						if (dwWaitResultIn == WAIT_OBJECT_0)
+						{
+							UINT32 actualWriteIndex = objData->m_writeIndexOverflowed ? objData->m_writeIndex + ISACCALLBACKBUFSIZE : objData->m_writeIndex;
+
+							// TODO: change 480, 4, and 1920 in the following code to #def'd variables
+							BOOL enoughData = ((float)actualWriteIndex - (float)objData->m_readIndex) >= 480.0f;
+
+							//Get the object buffer
+							BYTE* buffer = nullptr;
+							UINT32 bytecount;
+							hr = objISAC->GetBuffer(&buffer, &bytecount);
+							if (FAILED(hr))
+							{
+								//TODO: how do we handle this in a better way?
+								continue;
+							}
+
+							objISAC->SetPosition(objData->m_dataPosX[objData->m_readIndex],
+								objData->m_dataPosY[objData->m_readIndex],
+								objData->m_dataPosZ[objData->m_readIndex]);
+
+							//objISAC->SetPosition(0.5f, 0.0f, 0.7f);
+
+							objISAC->SetVolume(1.0f);
+
+							if (enoughData)
+							{
+								for (UINT32 inx = 0; inx < 480; inx++)
+								{
+									*((float*)buffer) = objData->m_dataBuf[objData->m_readIndex];
+									//*((float*)buffer) = ((float) rand()) / ((float)RAND_MAX + 1.0f);
+									buffer += 4;
+
+									objData->m_readIndex++;
+									if (objData->m_readIndex >= ISACCALLBACKBUFSIZE)
+									{
+										objData->m_readIndex -= ISACCALLBACKBUFSIZE;
+										objData->m_writeIndexOverflowed = FALSE;
+									}
+								}
+							}
+							else
+							{
+								objData->m_EmptyCount++;
+
+								if (objData->m_EmptyCount == EMPTY_COUNT_LIMIT)
+								{
+									// Put into Remove Queue
+									RemoveQueue.push_back(objData);
+								}
+
+								// fill with silence
+								for (UINT32 inx = 0; inx < 480; inx++)
+								{
+									*((float*)buffer) = 0.0f;
+									buffer += 4;
+								}
+							}
+						}
+						ReleaseMutex(objData->m_lock);
+					}
+
+					// Let the audio-engine know that the object data are available for processing now 
+					hr = g_SpatialAudioStream->EndUpdatingAudioObjects();
 					if (FAILED(hr))
 					{
-						//TODO: how do we handle this in a better way?
+						// TODO: WHAT TO DO HERE
 						continue;
 					}
 
-					isacObjData->object->SetPosition(isacObjData->m_dataPosX[isacObjData->m_readIndex],
-						isacObjData->m_dataPosY[isacObjData->m_readIndex],
-						isacObjData->m_dataPosZ[isacObjData->m_readIndex]);
+					// REMOVE INACTIVE OBJECTS FROM QUEUE
 
-					isacObjData->object->SetVolume(1.f);
-
-					if (enoughData)
+					if (!RemoveQueue.empty())
 					{
-						for (UINT32 inx = 0; inx < 480; inx++)
-						{
-							*((float*)buffer) = isacObjData->m_dataBuf[isacObjData->m_readIndex];
-							buffer += 4;
-
-							isacObjData->m_readIndex++;
-							if (isacObjData->m_readIndex >= ISACCALLBACKBUFSIZE)
+						DWORD dwWaitResult = WaitForSingleObject(g_QueueMutex, INFINITE); // TODO: CHOOSE A TIMEOUT
+							if (dwWaitResult == WAIT_OBJECT_0)
 							{
-								isacObjData->m_readIndex -= ISACCALLBACKBUFSIZE;
+								// Go through the remove queue and remove the elements in it from the global queue
+								while (!RemoveQueue.empty())
+								{
+									UnityAudioData *objData = RemoveQueue.front();
+									RemoveQueue.pop_front();
+
+									// Check one last time before removing
+									DWORD dwWaitResultIn = WaitForSingleObject(objData->m_lock, INFINITE);
+										if (dwWaitResultIn == WAIT_OBJECT_0)
+										{
+											if (objData->m_EmptyCount == EMPTY_COUNT_LIMIT)
+											{
+												g_UnityAudioObjectQueue.erase(objData->iter);
+												objData->m_InQueue = FALSE;
+											}
+										}
+									ReleaseMutex(objData->m_lock);
+								}
 							}
-						}
+							else if (dwWaitResult == WAIT_ABANDONED)
+							{
+								// Not sure what to do here
+							}
+						ReleaseMutex(g_QueueMutex);
 					}
-					else
-					{
-						// fill with silence
-						for (UINT32 inx = 0; inx < 480; inx++)
-						{
-							*((float*)buffer) = 0.0f;
-							buffer += 4;
-						}
-
-					}
-					buffer = buffer - (1920);
 				}
-
-				// Let the audio-engine know that the object data are available for processing now 
-				hr = g_SpatialAudioStream->EndUpdatingAudioObjects();
-				if (FAILED(hr))
+				else 
 				{
-					// TODO: WHAT TO DO HERE
+					// TODO: what do we do here?
 					continue;
 				}
-			}
-			else 
-			{
-				// TODO: what do we do here?
-				continue;
-			}
-			ReleaseMutex(g_ObjListsMutex);
+			ReleaseMutex(g_ISACObjectVectorMutex);
 		}
 	}
 
-	void InitializeSpatialAudioClient(int sampleRate) 
-	{	
-		g_SystemSampleRate = sampleRate;
-		if (g_SystemSampleRate != REQUIREDSAMPLERATE)	// as of 2016, if not 48k samplerate, MS HRTF will die
-			return;
+	HRESULT CreateSpatialAudioClientActivationParams(GUID contextId, GUID appId, int majorVer, int minorVer1, int minorVer2, int minorVer3, PROPVARIANT* pActivationParams)
+	{
+		PROPVARIANT var;
+		PropVariantInit(&var);
 
+		// SpatialAudioClientActivationParams is defined in latest spatialaudioclient.idl in _media_dev
+		SpatialAudioClientActivationParams* params = reinterpret_cast<SpatialAudioClientActivationParams*>(CoTaskMemAlloc(sizeof(SpatialAudioClientActivationParams)));
+
+		if (params == nullptr)
+		{
+			return E_OUTOFMEMORY;
+		}
+
+		params->tracingContextId = contextId;
+		params->appId = appId;
+		params->majorVersion = majorVer;
+		params->minorVersion1 = minorVer1;
+		params->minorVersion2 = minorVer2;
+		params->minorVersion3 = minorVer3;
+		var.vt = VT_BLOB;
+		var.blob.cbSize = sizeof(*params);
+		var.blob.pBlobData = reinterpret_cast<BYTE *>(params);
+		*pActivationParams = var;
+
+		return S_OK;
+	}
+
+#ifdef UWPBUILD
+	class ISACInitializer :
+		public Microsoft::WRL::RuntimeClass< Microsoft::WRL::RuntimeClassFlags< Microsoft::WRL::ClassicCom >, Microsoft::WRL::FtmBase, IActivateAudioInterfaceCompletionHandler >
+	{
+	public:
+		ISACInitializer();
+		~ISACInitializer();
+
+		Platform::String^		m_DeviceIdString;
+		bool					m_ISACDeviceActive;
+
+		ISpatialAudioClient	   *m_SpatialAudioClient;
+		HANDLE                  m_CompletedEvent;
+		HRESULT					m_ActivateHResult;
+
+		HRESULT InitializeAudioDeviceAsync();
+
+		STDMETHOD(ActivateCompleted) (IActivateAudioInterfaceAsyncOperation *operation);
+	};
+
+	ISACInitializer::ISACInitializer() :
+		m_SpatialAudioClient(nullptr),
+		m_ActivateHResult(E_FAIL)
+	{
+		m_CompletedEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+	}
+
+	ISACInitializer::~ISACInitializer()
+	{
+		CloseHandle(m_CompletedEvent);
+	}
+
+	HRESULT ISACInitializer::InitializeAudioDeviceAsync()
+	{
+		ComPtr<IActivateAudioInterfaceAsyncOperation> asyncOp;
+		HRESULT hr = S_OK;
+		PROPVARIANT activationParams;
+		PROPVARIANT* pActivationParams = nullptr;
+
+		// Get a string representing the Default Audio Device Renderer
+		m_DeviceIdString = Windows::Media::Devices::MediaDevice::GetDefaultAudioRenderId(Windows::Media::Devices::AudioDeviceRole::Default);
+
+		// Create activation params - this specifies a GUID that lets ISAC know that the Middleware being used by the App is Unity
+		hr = CreateSpatialAudioClientActivationParams(GUID_NULL, UNITY_ISAC_MIDDLEWARE_ID, MAJOR_VERSION, MINOR_VERSION1, MINOR_VERSION2, 0, &activationParams);
+		pActivationParams = SUCCEEDED(hr) ? &activationParams : nullptr;
+
+		// This call must be made on the main UI thread.  Async operation will call back to 
+		// IActivateAudioInterfaceCompletionHandler::ActivateCompleted, which must be an agile interface implementation
+		hr = ActivateAudioInterfaceAsync(m_DeviceIdString->Data(), __uuidof(ISpatialAudioClient), pActivationParams, this, &asyncOp);
+		if (FAILED(hr))
+		{
+			m_ISACDeviceActive = false;
+		}
+
+		return hr;
+	}
+
+	HRESULT ISACInitializer::ActivateCompleted(IActivateAudioInterfaceAsyncOperation *operation)
+	{
+		HRESULT hr = S_OK;
+
+		IUnknown *punkAudioInterface = nullptr;
+
+		hr = operation->GetActivateResult(&m_ActivateHResult, &punkAudioInterface);
+
+		if (nullptr == punkAudioInterface)
+		{
+			hr = E_FAIL;
+			goto exit;
+		}
+
+		// Finally. Get the pointer for the Spatial Audio Client Interface
+		punkAudioInterface->QueryInterface(IID_PPV_ARGS(&m_SpatialAudioClient));
+
+		if (nullptr == m_SpatialAudioClient)
+		{
+			hr = E_FAIL;
+			goto exit;
+		}
+
+	exit:
+		if (punkAudioInterface != NULL)
+		{
+			punkAudioInterface->Release();
+			punkAudioInterface = NULL;
+		}
+
+		if (FAILED(hr))
+		{
+			if (m_SpatialAudioClient != NULL)
+			{
+				m_SpatialAudioClient->Release();
+				m_SpatialAudioClient = NULL;
+			}
+		}
+
+		//Signal the completion of the Asynchronous Activation operation
+		SetEvent(m_CompletedEvent);
+		return S_OK;
+	}
+
+	
+	ISpatialAudioClient* GetSpatialAudioClientFromInitializer()
+	{
+		ISACInitializer init;
+		DWORD waitResult;
+
+		HRESULT hr;
+
+		hr = init.InitializeAudioDeviceAsync();
+		if (FAILED(hr))
+		{
+			return nullptr;
+		}
+
+		waitResult = WaitForSingleObject(init.m_CompletedEvent, INFINITE);
+		if (WAIT_OBJECT_0 == waitResult)
+		{
+			hr = S_OK;
+		}
+		else if (WAIT_TIMEOUT == waitResult)
+		{
+			hr = HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+			//TODO ERROR HANDLING
+		}
+		else if (WAIT_FAILED == waitResult)
+		{
+			hr = HRESULT_FROM_WIN32(GetLastError());
+
+			HRESULT hr2 = hr;
+
+			if (FAILED(hr))
+			{
+				HRESULT hr3 = hr;
+			}
+			//TODO ERROR HANDLING
+		}
+		else
+		{
+			hr = E_FAIL;
+			//TODO ERROR HANDLING
+		}
+
+		if (init.m_ActivateHResult != S_OK)
+		{
+			return nullptr;
+		}
+		else
+		{
+			return init.m_SpatialAudioClient;
+		}
+	}
+
+#endif
+
+	class ISACNotify WrlSealed :
+		public Microsoft::WRL::RuntimeClass<
+		Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
+		ISpatialAudioObjectRenderStreamNotify,
+		Microsoft::WRL::FtmBase>
+	{
+	public:
+		STDMETHOD(OnAvailableDynamicObjectCountChange)(
+			_In_ ISpatialAudioObjectRenderStreamBase *sender,
+			_In_ LONGLONG hnsComplianceDeadlineTime,
+			_In_ UINT32 objectCount)
+		{
+			BOOL countLowered = FALSE;
+			UINT32 difference = 0;
+
+			// store the new count in the global 
+			DWORD dwWaitResult = WaitForSingleObject(g_ISACObjectCountMutex, INFINITE); // TODO: CHOOSE A TIMEOUT
+				if (dwWaitResult == WAIT_OBJECT_0)
+				{
+					if (objectCount < g_ISACObjectCount)
+					{
+						countLowered = TRUE;
+						difference = g_ISACObjectCount - objectCount;
+					}
+
+					g_ISACObjectCount = objectCount;
+				}
+				else if (dwWaitResult == WAIT_ABANDONED)
+				{
+					// Not sure what to do here
+				}
+			ReleaseMutex(g_ISACObjectCountMutex);
+			
+			if (countLowered)
+			{
+				// Resize the queue by removing elements from the end
+				dwWaitResult = WaitForSingleObject(g_QueueMutex, INFINITE); // TODO: CHOOSE A TIMEOUT
+					if (dwWaitResult == WAIT_OBJECT_0)
+					{
+						while (difference > 0 && g_UnityAudioObjectQueue.size() > 0)
+						{
+							// pop from queue
+							UnityAudioData* objData = g_UnityAudioObjectQueue.back();
+							g_UnityAudioObjectQueue.pop_back();
+							difference--;
+
+							// update status of object to 'not in queue'
+							DWORD dwWaitResultIn = WaitForSingleObject(objData->m_lock, INFINITE);
+								if (dwWaitResultIn == WAIT_OBJECT_0)
+								{
+									objData->m_InQueue = FALSE;
+								}
+								else if (dwWaitResult == WAIT_ABANDONED)
+								{
+									// Not sure what to do here
+								}
+							ReleaseMutex(objData->m_lock);
+						}
+					}
+					else if (dwWaitResult == WAIT_ABANDONED)
+					{
+						// Not sure what to do here
+					}
+				ReleaseMutex(g_QueueMutex);
+			}
+			return S_OK;
+		}
+	};
+
+	ISACNotify g_notifyObj;
+
+	bool InitializeSpatialAudioClient(int sampleRate) 
+	{	
+		// ISAC only supports 48K at this point
+		// TODO: Add support for other sampling rates when ISAC adds support for them.
+		g_SystemSampleRate = sampleRate;
+		if (g_SystemSampleRate != REQUIREDSAMPLERATE)	
+			return false;
+
+		HRESULT hr = S_OK;
+		PROPVARIANT* pActivationParams = nullptr;
+
+#ifndef UWPBUILD
 		/* QUERY IMMDEVICE TO GET DEFAULT ENDPOINT AND INITIALIZE ISAC ON IT */
 		CoCreateInstance(
 			__uuidof(MMDeviceEnumerator), NULL,
@@ -236,14 +613,33 @@ namespace MSHRTFSpatializer
 		g_pEnumerator->GetDefaultAudioEndpoint(eRender, eConsole, &g_pDevice);
 
 		if (!&g_pDevice)
-			return;
+			return false;
 
-		HRESULT hr = g_pDevice->Activate(__uuidof(ISpatialAudioClient), CLSCTX_INPROC_SERVER, nullptr, (void**)&g_SpatialAudioClient);
+		PROPVARIANT activationParams;
+
+		// Create activation params - this specifies a GUID that lets ISAC know that the Middleware being used by the App is Unity
+		hr = CreateSpatialAudioClientActivationParams(GUID_NULL, UNITY_ISAC_MIDDLEWARE_ID, MAJOR_VERSION, MINOR_VERSION1, MINOR_VERSION2, 0, &activationParams);
+		pActivationParams = SUCCEEDED(hr) ? &activationParams : nullptr;
+
+		hr = g_pDevice->Activate(__uuidof(ISpatialAudioClient), CLSCTX_INPROC_SERVER, pActivationParams, (void**)&g_SpatialAudioClient);
+#else
+		g_SpatialAudioClient = GetSpatialAudioClientFromInitializer();
+#endif
+	
+		if (g_SpatialAudioClient == nullptr)
+		{
+			// Spatial Audio Client creation failed
+			return false;
+		}
 
 		/* NOW THAT WE HAVE ISAC, QUERY IT FOR RELEVANT DATA BEFORE CREATING A STREAM */
 		// Check the available rendering formats 
 		ComPtr<IAudioFormatEnumerator> audioObjectFormatEnumerator;
 		hr = g_SpatialAudioClient->GetSupportedAudioObjectFormatEnumerator(&audioObjectFormatEnumerator);
+		if (FAILED(hr))
+		{
+			return false;
+		}
 
 		WAVEFORMATEX* objectFormat = nullptr;
 
@@ -251,52 +647,64 @@ namespace MSHRTFSpatializer
 		hr = audioObjectFormatEnumerator->GetCount(&audioObjectFormatCount); // There should be at least one format that the API accepts
 		if (audioObjectFormatCount == 0)
 		{
-			return;
+			return false;
 		}
 
 		// Select the most favorable format: the first one
 		hr = audioObjectFormatEnumerator->GetFormat(0, &objectFormat);
+		if (FAILED(hr))
+		{
+			return false;
+		}
 
 		// Create the event that will be used to signal the client for more data
 		g_ISACBufferCompletionEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
-		// Ask ISAC about how many objects we will have
-		hr = g_SpatialAudioClient->GetAvailableDynamicObjectCount(&g_NumAudioObjects);
+		UINT32 maxNumISACObjects = 0;
 
-		/*TODO: EXPERIMENTAL. REMOVE LATER.*/
-		if (g_NumAudioObjects > 100)
+		// Ask ISAC about the maximum number of objects we can have
+		hr = g_SpatialAudioClient->GetMaxDynamicObjectCount(&maxNumISACObjects);
+		if (FAILED(hr) || maxNumISACObjects == 0)
 		{
-			g_NumAudioObjects = 100;
+			return false;
 		}
 
-		/* CREATE AND INITIALIZE METADATA FOR THESE OBJECTS */
-		g_AudioObjectArray = new ISACAudioObjectData[g_NumAudioObjects + 10];
+		g_ISACObjectVector.resize(maxNumISACObjects, nullptr);
 
-		// Initialize all these objects as free
-		for (UINT32 inx = 0; inx < g_NumAudioObjects; inx++)
+		SpatialAudioObjectRenderStreamActivationParams params = {};
+		params.Category = AudioCategory_GameEffects;
+		params.EventHandle = g_ISACBufferCompletionEvent;
+		params.MinDynamicObjectCount = (UINT32) (0.2f * (float)maxNumISACObjects);		// set minimum to 20% of max
+		params.MaxDynamicObjectCount = maxNumISACObjects;
+		params.NotifyObject = &g_notifyObj;
+		params.ObjectFormat = objectFormat;
+		params.StaticObjectTypeMask = AudioObjectType_None;		// No Static bed objects
+
+		PROPVARIANT activateParams;
+		PropVariantInit(&activateParams);
+		activateParams.vt = VT_BLOB;
+		activateParams.blob.cbSize = sizeof(params);
+		activateParams.blob.pBlobData = reinterpret_cast<BYTE*>(&params);
+
+
+		hr = g_SpatialAudioClient->ActivateSpatialAudioStream(
+			&activateParams,
+			__uuidof(ISpatialAudioObjectRenderStream),
+			&g_SpatialAudioStream
+		);
+
+		if (FAILED(hr))
 		{
-			g_FreeISACAudioObjectIndices.push_back(inx);
+			return false;
 		}
 
-		/* CREATE AND START SPATIAL AUDIO STREAM */
-		hr = g_SpatialAudioClient->ActivateSpatialAudioObjectRenderStream(
-			objectFormat,
-			0,
-			g_NumAudioObjects,
-			AudioCategory_GameEffects,
-			g_ISACBufferCompletionEvent,
-			nullptr,
-			&g_SpatialAudioStream);
-
-		if (hr == AUDCLNT_E_UNSUPPORTED_FORMAT)
-		{
-			// TODO: More error handling
-			return;
-		}
-
-		g_SpatialAudioStream->GetFrameCount(&frameCount);
+		//g_SpatialAudioStream->GetFrameCount(&frameCount);
 
 		hr = g_SpatialAudioStream->Start();
+		if (FAILED(hr))
+		{
+			return false;
+		}
 		
 		g_FirstCreateCallback = FALSE;
 
@@ -304,11 +712,13 @@ namespace MSHRTFSpatializer
 		g_WorkThreadActive = TRUE;
 		g_WorkThread = CreateThreadpoolWork(SpatialWorkCallbackNew, nullptr, nullptr);
 		SubmitThreadpoolWork(g_WorkThread); 
+
+		return true;
 	}
 
 	static UNITY_AUDIODSP_RESULT UNITY_AUDIODSP_CALLBACK DistanceAttenuationCallback(UnityAudioEffectState* state, float distanceIn, float attenuationIn, float* attenuationOut)
 	{
-		UnityAudioObjectData* data = state->GetEffectData<UnityAudioObjectData>();
+		UnityAudioData* data = state->GetEffectData<UnityAudioData>();
 		*attenuationOut = attenuationIn;
 		return UNITY_AUDIODSP_OK;
 	}
@@ -323,163 +733,98 @@ namespace MSHRTFSpatializer
 
 	UNITY_AUDIODSP_RESULT UNITY_AUDIODSP_CALLBACK CreateCallback(UnityAudioEffectState* state)
 	{
-		UnityAudioObjectData* unityObjData = new UnityAudioObjectData;
-		memset(unityObjData, 0, sizeof(UnityAudioObjectData));
-		state->effectdata = unityObjData;
+		// Create the object which contains the buffer and variables necessary 
+		// for transfer of audio data from Unity to ISAC audio objects
+		UnityAudioData* objData = new UnityAudioData;
+		memset (objData, 0, sizeof(UnityAudioData));
+		objData->m_lock = CreateMutex(NULL, FALSE, NULL);
+		if (objData->m_lock == NULL)
+		{
+			return UNITY_AUDIODSP_ERR_UNSUPPORTED;
+		}
 
-		InitParametersFromDefinitions(InternalRegisterEffectDefinition, unityObjData->p);
+		state->effectdata = objData;
 
+		// Fills in default values (from the effects definition) into the params array
+		InitParametersFromDefinitions(InternalRegisterEffectDefinition, objData->p);
+
+		// If the current Unity version supports it, set the distance attenuation callback
 		if (IsHostCompatible(state))
 			state->spatializerdata->distanceattenuationcallback = DistanceAttenuationCallback;
 
-		if (g_FirstCreateCallback)	// First object being created; init ISAC
+		// If ISAC hasn't been initialized yet, initialize it and start the ISAC worker thread
+		if (g_FirstCreateCallback)	
 		{
-			InitializeSpatialAudioClient(state->samplerate);
-
-			g_ObjListsMutex = CreateMutex(NULL, FALSE, NULL);
-
-			if (g_ObjListsMutex == NULL)
+			g_QueueMutex = CreateMutex(NULL, FALSE, NULL);
+			if (g_QueueMutex == NULL)
 			{
-				// Error: Couldn't create a mutex; throw a fit
+				return UNITY_AUDIODSP_ERR_UNSUPPORTED;
 			}
-		}
 
-		DWORD dwWaitResult = WaitForSingleObject(g_ObjListsMutex, INFINITE); // TODO: CHOOSE A TIMEOUT
-		
-		if (dwWaitResult == WAIT_OBJECT_0)
-		{
-			// Is there an ISAC resource for this object?
-			if (g_FreeISACAudioObjectIndices.size() > 0)
+			g_ISACObjectCountMutex = CreateMutex(NULL, FALSE, NULL);
+			if (g_ISACObjectCountMutex == NULL)
 			{
-				// Yes, there is - assign that resource to this object
-				UINT32 objInx = g_FreeISACAudioObjectIndices.back();
-				g_FreeISACAudioObjectIndices.pop_back();
-				g_UsedISACAudioObjectIndices.push_back(objInx);
-
-				unityObjData->ObjectIndex = objInx;
-
-				HRESULT hr = g_SpatialAudioStream->ActivateSpatialAudioObject(
-					AudioObjectType_Dynamic,
-					&g_AudioObjectArray[objInx].object);
-
-				// TODO: error handling
+				return UNITY_AUDIODSP_ERR_UNSUPPORTED;
 			}
-			else
+
+			g_ISACObjectVectorMutex = CreateMutex(NULL, FALSE, NULL);
+			if (g_ISACObjectVectorMutex == NULL)
 			{
-				// No ISAC resources available right now. Put this object in the Wait list
-				unityObjData->ObjectIndex = -1;
-				g_ISACObjectWaitList.push_back(unityObjData);
+				return UNITY_AUDIODSP_ERR_UNSUPPORTED;
 			}
-		}
-		else if (dwWaitResult == WAIT_ABANDONED)
-		{
-			// TODO: NOT SURE WHAT TO DO
-		}
 
-		ReleaseMutex(g_ObjListsMutex);
+			if (!InitializeSpatialAudioClient(state->samplerate))
+			{
+				return UNITY_AUDIODSP_ERR_UNSUPPORTED;
+			}
+
+			g_SpatialAudioClientCreated = TRUE;
+		}
 
 		return UNITY_AUDIODSP_OK;
 	}
 
 	UNITY_AUDIODSP_RESULT UNITY_AUDIODSP_CALLBACK ReleaseCallback(UnityAudioEffectState* state)
 	{
-		UnityAudioObjectData* unityObjData = state->GetEffectData<UnityAudioObjectData>();
+		UnityAudioData* objData = state->GetEffectData<UnityAudioData>();
 
-		DWORD dwWaitResult = WaitForSingleObject(g_ObjListsMutex, INFINITE); // TODO: CHOOSE A TIMEOUT
-
-		if (dwWaitResult == WAIT_OBJECT_0)
+		// Wait until the EmptyCount for the object becomes the limit
+		// At that point, it would have been removed from the queue, so it is safe to delete it
+		while (true)
 		{
-			// Find if this unity object is using an ISAC object
-			BOOL objInUsedArray = FALSE;
-			std::list<UINT32>::iterator objIterInUsedArray;
-			for (std::list<UINT32>::iterator iter = g_UsedISACAudioObjectIndices.begin(); iter != g_UsedISACAudioObjectIndices.end(); iter++)
+			if (objData->m_InQueue == FALSE)
 			{
-				if (unityObjData->ObjectIndex == *iter)
-				{
-					objInUsedArray = TRUE;
-					objIterInUsedArray = iter;
-					break;
-				}
-			}
-
-			if (objInUsedArray)
-			{
-				if (g_ISACObjectWaitList.size() > 0)
-				{
-					// There's at least one object waiting for ISAC resources
-					// assign the freed resource to the object in the front of the Wait List
-					UnityAudioObjectData* waitingObj = g_ISACObjectWaitList.front();
-					g_ISACObjectWaitList.pop_front();
-
-					waitingObj->ObjectIndex = unityObjData->ObjectIndex;
-				}
-				else
-				{
-					// No objects are waiting for ISAC resources, free the ISAC resource
-					ISACAudioObjectData* objISAC = g_AudioObjectArray + *objIterInUsedArray;
-					objISAC->object = nullptr;
-
-					// Move from used resources to free
-					g_FreeISACAudioObjectIndices.push_back(*objIterInUsedArray);
-					g_UsedISACAudioObjectIndices.erase(objIterInUsedArray);
-				}
+				//Wait a little before deleting it
+				Sleep(1);
+				delete objData;
+				break;
 			}
 			else
 			{
-				// This unity object was not using an ISAC object; it should be in the wait list
-				BOOL objInWaitList = FALSE;
-				std::list<UnityAudioObjectData*>::iterator objIterInWaitList;
-
-				for (std::list<UnityAudioObjectData*>::iterator iter = g_ISACObjectWaitList.begin(); iter != g_ISACObjectWaitList.end(); iter++)
-				{
-					if (unityObjData == *iter)
-					{
-						objInWaitList = TRUE;
-						objIterInWaitList = iter;
-						break;
-					}
-				}
-
-				if (objInWaitList)
-				{
-					g_ISACObjectWaitList.erase(objIterInWaitList);
-				}
-				else
-				{
-					// This shouldn't happen
-				}
+				// Wait for a while until it has been removed from the queue
+				Sleep(10);
 			}
 		}
-		else if (dwWaitResult == WAIT_ABANDONED)
-		{
-			// TODO: NOT SURE WHAT TO DO
-		}
-
-		ReleaseMutex(g_ObjListsMutex);
-
-		delete unityObjData;
-
-		// TODO: Find a point when to stop the ISAC stream and clean up
 
 		return UNITY_AUDIODSP_OK;
 	}
 
 	UNITY_AUDIODSP_RESULT UNITY_AUDIODSP_CALLBACK SetFloatParameterCallback(UnityAudioEffectState* state, int index, float value)
 	{
-		UnityAudioObjectData* unityObjData = state->GetEffectData<UnityAudioObjectData>();
+		UnityAudioData* objData = state->GetEffectData<UnityAudioData>();
 		if (index >= P_NUM)
 			return UNITY_AUDIODSP_ERR_UNSUPPORTED;
-		unityObjData->p[index] = value;
+		objData->p[index] = value;
 		return UNITY_AUDIODSP_OK;
 	}
 
 	UNITY_AUDIODSP_RESULT UNITY_AUDIODSP_CALLBACK GetFloatParameterCallback(UnityAudioEffectState* state, int index, float* value, char *valuestr)
 	{
-		UnityAudioObjectData* unityObjData = state->GetEffectData<UnityAudioObjectData>();
+		UnityAudioData* objData = state->GetEffectData<UnityAudioData>();
 		if (index >= P_NUM)
 			return UNITY_AUDIODSP_ERR_UNSUPPORTED;
 		if (value != NULL)
-			*value = unityObjData->p[index];
+			*value = objData->p[index];
 		if (valuestr != NULL)
 			valuestr[0] = 0;
 		return UNITY_AUDIODSP_OK;
@@ -494,73 +839,112 @@ namespace MSHRTFSpatializer
 
 	UNITY_AUDIODSP_RESULT UNITY_AUDIODSP_CALLBACK ProcessCallback(UnityAudioEffectState* state, float* inbuffer, float* outbuffer, unsigned int length, int inchannels, int outchannels)
 	{
-		if (inchannels != 2 || outchannels != 2 || g_SystemSampleRate != REQUIREDSAMPLERATE)	// as of 2016, these are requirements for MS HRTF
+		// If ISAC hasn't been initialized yet, or if the provided data doesn't meet ISAC's requirements, just pass it back to Unity
+		if (g_SpatialAudioClientCreated != TRUE || inchannels != 2 || outchannels != 2 || g_SystemSampleRate != REQUIREDSAMPLERATE)
 		{
 			memcpy(outbuffer, inbuffer, length * outchannels * sizeof(float));
 			return UNITY_AUDIODSP_ERR_UNSUPPORTED;
 		}
 
-		UnityAudioObjectData* unityObjdata = state->GetEffectData<UnityAudioObjectData>();
+		UnityAudioData* objData = state->GetEffectData<UnityAudioData>();
 
-		DWORD dwWaitResult = WaitForSingleObject(g_ObjListsMutex, INFINITE); // TODO: CHOOSE A TIMEOUT
-		if (dwWaitResult == WAIT_OBJECT_0)
-		{
+		// Pre-emptively copy data over to the buffer that will be rendered by ISAC.
+		// If, at the end, we decide this data won't be rendered by ISAC, then we will
+		// just revert the buffer write index to its original value and pretend as if
+		// we never wrote the data.
+		UINT32 origWriteIndex = objData->m_writeIndex;
+		BOOL origWriteIndexOverflowed = objData->m_writeIndexOverflowed;
 
-			if (unityObjdata->ObjectIndex == -1)
+		// Convert position data from Unity's coordinate system to ISAC's coordinate system
+		float* m = state->spatializerdata->listenermatrix;
+		float* s = state->spatializerdata->sourcematrix;
+
+		// Currently we ignore source orientation and only use source position
+		float px = s[12];
+		float py = s[13];
+		float pz = s[14];
+
+		float dir_x = m[0] * px + m[4] * py + m[8] * pz + m[12];
+		float dir_y = m[1] * px + m[5] * py + m[9] * pz + m[13];
+		float dir_z = m[2] * px + m[6] * py + m[10] * pz + m[14];
+
+		DWORD dwWaitResult = WaitForSingleObject(objData->m_lock, INFINITE); // Infinite because this thread can afford to wait
+			if (dwWaitResult == WAIT_OBJECT_0)
 			{
-				// This Unity Object does not have an ISAC Object assigned to it
-				// pass the audio back to Unity so that it could be rendered in 2D
-				memcpy(outbuffer, inbuffer, length * outchannels * sizeof(float));
-				ReleaseMutex(g_ObjListsMutex);
-				return UNITY_AUDIODSP_OK;
-			}
-			else
-			{
-				// This Unity Object has an ISAC Object assigned to it
-				// Copy over the audio and position data so that ISAC can render it
-				ISACAudioObjectData* isacObjData = g_AudioObjectArray + unityObjdata->ObjectIndex;
-
-				/* CONVERT POSITION DATA FROM UNITY'S SYSTEM TO ISAC'S SYSTEM */
-				float* m = state->spatializerdata->listenermatrix;
-				float* s = state->spatializerdata->sourcematrix;
-
-				// Currently we ignore source orientation and only use the position
-				float px = s[12];
-				float py = s[13];
-				float pz = s[14];
-
-				float dir_x = m[0] * px + m[4] * py + m[8] * pz + m[12];
-				float dir_y = m[1] * px + m[5] * py + m[9] * pz + m[13];
-				float dir_z = m[2] * px + m[6] * py + m[10] * pz + m[14];
-
-				isacObjData->m_writeIndexOverflowed = FALSE;
+				objData->m_EmptyCount = 0;
 
 				for (UINT32 inx = 0; inx < length; inx++)
 				{
-					isacObjData->m_writeIndex++;
+					objData->m_writeIndex++;
 
-					if (isacObjData->m_writeIndex >= ISACCALLBACKBUFSIZE)
+					if (objData->m_writeIndex >= ISACCALLBACKBUFSIZE)
 					{
-						isacObjData->m_writeIndex -= ISACCALLBACKBUFSIZE;
-						isacObjData->m_writeIndexOverflowed = TRUE;
+						objData->m_writeIndex -= ISACCALLBACKBUFSIZE;
+						objData->m_writeIndexOverflowed = TRUE;
 					}
 
-					isacObjData->m_dataPosX[isacObjData->m_writeIndex] = dir_x;
-					isacObjData->m_dataPosY[isacObjData->m_writeIndex] = dir_y;
-					isacObjData->m_dataPosZ[isacObjData->m_writeIndex] = -dir_z;
+					objData->m_dataPosX[objData->m_writeIndex] = dir_x;
+					objData->m_dataPosY[objData->m_writeIndex] = dir_y;
+					objData->m_dataPosZ[objData->m_writeIndex] = -dir_z;
 
-					isacObjData->m_dataBuf[isacObjData->m_writeIndex] = inbuffer[inx * 2];
+					objData->m_dataBuf[objData->m_writeIndex] = inbuffer[inx * 2];
 				}
 
-				memset(outbuffer, 0, length);	// dont return audio to unity
-			}
-		}
-		else if (dwWaitResult == WAIT_ABANDONED)
-		{
-			// TODO: NOT SURE WHAT TO DO
-		}
+				memset(outbuffer, 0, length);	// This means we're not going to be returning data back to Unity.
+												// If we are, then this buffer will be filled back below.
 
-		ReleaseMutex(g_ObjListsMutex);
+				// Now, if the object isn't already in the queue, add it in if there's enough space
+				if (objData->m_InQueue == FALSE)
+				{
+					UINT32 curISACObjCount = 0;
+					bool enoughSpaceInQueue = false;
+
+					// Get how many objects ISAC can render in the next processing pass
+					// TODO: Use Interlocked functions to deal with this variable instead?
+					DWORD dwWaitResult = WaitForSingleObject(g_ISACObjectCountMutex, INFINITE); // TODO: CHOOSE A TIMEOUT
+						if (dwWaitResult == WAIT_OBJECT_0)
+						{
+							curISACObjCount = g_ISACObjectCount;
+						}
+						else if (dwWaitResult == WAIT_ABANDONED)
+						{
+							// Not sure what to do here
+						}
+					ReleaseMutex(g_ISACObjectCountMutex);
+
+					// Read Queue size
+					dwWaitResult = WaitForSingleObject(g_QueueMutex, INFINITE); // TODO: CHOOSE A TIMEOUT
+						if (dwWaitResult == WAIT_OBJECT_0)
+						{
+							enoughSpaceInQueue = g_UnityAudioObjectQueue.size() < curISACObjCount;
+
+							// Only queue this object to be rendered by ISAC if the queue has enough capacity 
+							if (enoughSpaceInQueue)
+							{
+								g_UnityAudioObjectQueue.push_back(objData);
+								objData->iter = --g_UnityAudioObjectQueue.end();
+								objData->m_InQueue = TRUE;
+							}
+						}
+						else if (dwWaitResult == WAIT_ABANDONED)
+						{
+							// Not sure what to do here
+						}
+					ReleaseMutex(g_QueueMutex);
+
+					if (!enoughSpaceInQueue)
+					{
+						// If the queue didn't have enough space, then send the data back to Unity
+						// This also means we need to return the buffer write index to its original value
+
+						// copy data back to Unity
+						memcpy(outbuffer, inbuffer, length * outchannels * sizeof(float));
+						objData->m_writeIndex = origWriteIndex;
+						objData->m_writeIndexOverflowed = origWriteIndexOverflowed;
+					}
+				}
+			}
+		ReleaseMutex(objData->m_lock);
 
 		return UNITY_AUDIODSP_OK;
 	}
