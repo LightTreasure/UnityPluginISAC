@@ -544,7 +544,6 @@ copy /y "$(TargetPath)" "..\..\Assets\Plugins\x86_64\$(TargetName).dll"
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="..\AudioPluginUtil.cpp" />
-    <ClCompile Include="..\hrtftable.cpp" />
     <ClCompile Include="..\Plugin_MSHRTFSpatializer.cpp" />
   </ItemGroup>
   <ItemGroup>

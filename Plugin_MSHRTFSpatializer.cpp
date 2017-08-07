@@ -588,7 +588,7 @@ namespace MSHRTFSpatializer
 
 		p_Enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &p_Device);
 
-		if (!&g_p_Device)
+		if (!&p_Device)
 			return FALSE;
 
 		PROPVARIANT activationParams;
