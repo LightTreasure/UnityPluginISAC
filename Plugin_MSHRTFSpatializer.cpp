@@ -41,7 +41,7 @@ namespace MSHRTFSpatializer
 	const int REQUIREDSAMPLERATE = 48000;
 	UINT32 frameCount=NULL;
 
-#define ISACCALLBACKBUFSIZE 48000
+#define ISACCALLBACKBUFSIZE 4800
 #define EMPTY_COUNT_LIMIT 5
 
 	enum
@@ -85,6 +85,8 @@ namespace MSHRTFSpatializer
 
 	std::vector<ComPtr<ISpatialAudioObject>> g_ISACObjectVector;
 	HANDLE g_ISACObjectVectorMutex = nullptr;
+
+	LONG g_ThereIsSpaceInObjectQueue = FALSE;
 
 	/* ISAC VARIABLES */
 	IMMDevice* g_pDevice = NULL;
@@ -184,7 +186,8 @@ namespace MSHRTFSpatializer
 					hr = g_SpatialAudioStream->BeginUpdatingAudioObjects(
 						&availableObjectCount,
 						&frameCount);
-				
+
+					// 
 					// Go through the current read queue and copy data to ISAC Objects, if available
 					for (std::list<UnityAudioData*>::iterator iter = LocalCopyOfQueue.begin(); iter != LocalCopyOfQueue.end(); iter++)
 					{
@@ -256,6 +259,7 @@ namespace MSHRTFSpatializer
 							{
 								for (UINT32 inx = 0; inx < 480; inx++)
 								{
+									//*((float*)buffer) = 0.0f;
 									*((float*)buffer) = objData->m_dataBuf[objData->m_readIndex];
 									//*((float*)buffer) = ((float) rand()) / ((float)RAND_MAX + 1.0f);
 									buffer += 4;
@@ -326,6 +330,11 @@ namespace MSHRTFSpatializer
 							else if (dwWaitResult == WAIT_ABANDONED)
 							{
 								// Not sure what to do here
+							}
+
+							if (g_UnityAudioObjectQueue.size() < g_ISACObjectCount)
+							{
+								InterlockedExchange(&g_ThereIsSpaceInObjectQueue, TRUE);
 							}
 						ReleaseMutex(g_QueueMutex);
 					}
@@ -545,6 +554,10 @@ namespace MSHRTFSpatializer
 						countLowered = TRUE;
 						difference = g_ISACObjectCount - objectCount;
 					}
+					else if (objectCount > g_ISACObjectCount)
+					{
+						InterlockedExchange(&g_ThereIsSpaceInObjectQueue, TRUE);
+					}
 
 					g_ISACObjectCount = objectCount;
 				}
@@ -737,6 +750,7 @@ namespace MSHRTFSpatializer
 		// for transfer of audio data from Unity to ISAC audio objects
 		UnityAudioData* objData = new UnityAudioData;
 		memset (objData, 0, sizeof(UnityAudioData));
+
 		objData->m_lock = CreateMutex(NULL, FALSE, NULL);
 		if (objData->m_lock == NULL)
 		{
@@ -846,101 +860,109 @@ namespace MSHRTFSpatializer
 			return UNITY_AUDIODSP_ERR_UNSUPPORTED;
 		}
 
+		bool skipdataadd = false;
+
 		UnityAudioData* objData = state->GetEffectData<UnityAudioData>();
-
-		// Pre-emptively copy data over to the buffer that will be rendered by ISAC.
-		// If, at the end, we decide this data won't be rendered by ISAC, then we will
-		// just revert the buffer write index to its original value and pretend as if
-		// we never wrote the data.
-		UINT32 origWriteIndex = objData->m_writeIndex;
-		BOOL origWriteIndexOverflowed = objData->m_writeIndexOverflowed;
-
-		// Convert position data from Unity's coordinate system to ISAC's coordinate system
-		float* m = state->spatializerdata->listenermatrix;
-		float* s = state->spatializerdata->sourcematrix;
-
-		// Currently we ignore source orientation and only use source position
-		float px = s[12];
-		float py = s[13];
-		float pz = s[14];
-
-		float dir_x = m[0] * px + m[4] * py + m[8] * pz + m[12];
-		float dir_y = m[1] * px + m[5] * py + m[9] * pz + m[13];
-		float dir_z = m[2] * px + m[6] * py + m[10] * pz + m[14];
 
 		DWORD dwWaitResult = WaitForSingleObject(objData->m_lock, INFINITE); // Infinite because this thread can afford to wait
 			if (dwWaitResult == WAIT_OBJECT_0)
 			{
 				objData->m_EmptyCount = 0;
 
-				for (UINT32 inx = 0; inx < length; inx++)
-				{
-					objData->m_writeIndex++;
-
-					if (objData->m_writeIndex >= ISACCALLBACKBUFSIZE)
-					{
-						objData->m_writeIndex -= ISACCALLBACKBUFSIZE;
-						objData->m_writeIndexOverflowed = TRUE;
-					}
-
-					objData->m_dataPosX[objData->m_writeIndex] = dir_x;
-					objData->m_dataPosY[objData->m_writeIndex] = dir_y;
-					objData->m_dataPosZ[objData->m_writeIndex] = -dir_z;
-
-					objData->m_dataBuf[objData->m_writeIndex] = inbuffer[inx * 2];
-				}
-
-				memset(outbuffer, 0, length);	// This means we're not going to be returning data back to Unity.
-												// If we are, then this buffer will be filled back below.
-
 				// Now, if the object isn't already in the queue, add it in if there's enough space
 				if (objData->m_InQueue == FALSE)
 				{
+					
 					UINT32 curISACObjCount = 0;
 					bool enoughSpaceInQueue = false;
 
-					// Get how many objects ISAC can render in the next processing pass
-					// TODO: Use Interlocked functions to deal with this variable instead?
-					DWORD dwWaitResult = WaitForSingleObject(g_ISACObjectCountMutex, INFINITE); // TODO: CHOOSE A TIMEOUT
+					LONG thereIsSpaceInQueue = InterlockedCompareExchange(&g_ThereIsSpaceInObjectQueue, 0, 0);
+
+					if (thereIsSpaceInQueue)
+					{
+						// Get how many objects ISAC can render in the next processing pass
+						// TODO: Use Interlocked functions to deal with this variable instead?
+						DWORD dwWaitResult = WaitForSingleObject(g_ISACObjectCountMutex, INFINITE); // TODO: CHOOSE A TIMEOUT
 						if (dwWaitResult == WAIT_OBJECT_0)
 						{
-							curISACObjCount = g_ISACObjectCount;
-						}
-						else if (dwWaitResult == WAIT_ABANDONED)
-						{
-							// Not sure what to do here
-						}
-					ReleaseMutex(g_ISACObjectCountMutex);
-
-					// Read Queue size
-					dwWaitResult = WaitForSingleObject(g_QueueMutex, INFINITE); // TODO: CHOOSE A TIMEOUT
-						if (dwWaitResult == WAIT_OBJECT_0)
-						{
-							enoughSpaceInQueue = g_UnityAudioObjectQueue.size() < curISACObjCount;
-
-							// Only queue this object to be rendered by ISAC if the queue has enough capacity 
-							if (enoughSpaceInQueue)
+							// Read Queue size
+							dwWaitResult = WaitForSingleObject(g_QueueMutex, INFINITE); // TODO: CHOOSE A TIMEOUT
+							if (dwWaitResult == WAIT_OBJECT_0)
 							{
-								g_UnityAudioObjectQueue.push_back(objData);
-								objData->iter = --g_UnityAudioObjectQueue.end();
-								objData->m_InQueue = TRUE;
+								enoughSpaceInQueue = g_UnityAudioObjectQueue.size() < g_ISACObjectCount;
+
+								// Only queue this object to be rendered by ISAC if the queue has enough capacity 
+								if (enoughSpaceInQueue)
+								{
+									g_UnityAudioObjectQueue.push_back(objData);
+									objData->iter = --g_UnityAudioObjectQueue.end();
+									objData->m_InQueue = TRUE;
+
+									if (g_UnityAudioObjectQueue.size() == g_ISACObjectCount)
+									{
+										InterlockedExchange(&g_ThereIsSpaceInObjectQueue, FALSE);
+									}
+								}
 							}
+							else if (dwWaitResult == WAIT_ABANDONED)
+							{
+								// Not sure what to do here
+							}
+							ReleaseMutex(g_QueueMutex);
 						}
 						else if (dwWaitResult == WAIT_ABANDONED)
 						{
 							// Not sure what to do here
 						}
-					ReleaseMutex(g_QueueMutex);
+						ReleaseMutex(g_ISACObjectCountMutex);
+					}
 
 					if (!enoughSpaceInQueue)
 					{
 						// If the queue didn't have enough space, then send the data back to Unity
 						// This also means we need to return the buffer write index to its original value
-
+						
 						// copy data back to Unity
 						memcpy(outbuffer, inbuffer, length * outchannels * sizeof(float));
-						objData->m_writeIndex = origWriteIndex;
-						objData->m_writeIndexOverflowed = origWriteIndexOverflowed;
+						
+						skipdataadd = true;
+						return UNITY_AUDIODSP_ERR_UNSUPPORTED;
+					}
+				}
+
+				if (!skipdataadd)
+				{
+					memset(outbuffer, 0, length);	// This means we're not going to be returning data back to Unity.
+													// If we are, then this buffer will be filled back below.
+
+					// Convert position data from Unity's coordinate system to ISAC's coordinate system
+					float* m = state->spatializerdata->listenermatrix;
+					float* s = state->spatializerdata->sourcematrix;
+
+					// Currently we ignore source orientation and only use source position
+					float px = s[12];
+					float py = s[13];
+					float pz = s[14];
+
+					float dir_x = m[0] * px + m[4] * py + m[8] * pz + m[12];
+					float dir_y = m[1] * px + m[5] * py + m[9] * pz + m[13];
+					float dir_z = m[2] * px + m[6] * py + m[10] * pz + m[14];
+
+					for (UINT32 inx = 0; inx < length; inx++)
+					{
+						objData->m_writeIndex++;
+
+						if (objData->m_writeIndex >= ISACCALLBACKBUFSIZE)
+						{
+							objData->m_writeIndex -= ISACCALLBACKBUFSIZE;
+							objData->m_writeIndexOverflowed = TRUE;
+						}
+
+						objData->m_dataPosX[objData->m_writeIndex] = dir_x;
+						objData->m_dataPosY[objData->m_writeIndex] = dir_y;
+						objData->m_dataPosZ[objData->m_writeIndex] = -dir_z;
+
+						objData->m_dataBuf[objData->m_writeIndex] = inbuffer[inx * 2];
 					}
 				}
 			}
