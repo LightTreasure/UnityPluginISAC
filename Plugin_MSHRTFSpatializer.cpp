@@ -141,7 +141,6 @@ namespace MSHRTFSpatializer
 	BOOL g_WorkThreadActive = FALSE;
 
 //################ CLASS AND FUNCTION DEFINITIONS ################
-
 	// Registers spatializer plugin parameters to Unity
 	int InternalRegisterEffectDefinition(UnityAudioEffectDefinition& definition)
 	{
@@ -158,11 +157,16 @@ namespace MSHRTFSpatializer
 		return numparams;
 	}
 
+	// Declaration
+	BOOL InitializeSpatialAudioClient(int sampleRate, BOOL createWorkerThread);
+
 	// Function that actually sends data to ISAC. Runs in a separate thread, waits for
 	// ISAC to signal its invocation through g_ISACBufferCompletionEvent
 	VOID CALLBACK SpatialWorkCallbackNew(_Inout_ PTP_CALLBACK_INSTANCE Instance, _Inout_opt_ PVOID Context, _Inout_ PTP_WORK Work)
 	{
-		HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);	// TODO: Find out why this is needed and how this affects things.
+		HRESULT hr = S_OK;
+		hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);	// TODO: Find out why this is needed and how this affects things.
+		
 		Work;
 		Instance;
 
@@ -172,9 +176,33 @@ namespace MSHRTFSpatializer
 			UINT32 AvailableObjectCount = 0;
 			UINT32 ISACObjInx = 0;
 
-			// WAIT FOR ISAC EVENT
-			if (WaitForSingleObject(g_ISACBufferCompletionEvent, INFINITE) != WAIT_OBJECT_0)
+			// Wait for ISAC Event 
+			if (WaitForSingleObject(g_ISACBufferCompletionEvent, 100) != WAIT_OBJECT_0)
 			{
+				// Ideally, we should get an ISAC event every 10ms when ISAC is active.
+				// So if we don't get the event within 100 ms, we have an issue. One
+				// possibility is that the ISAC graph has been torn down because
+				// the Spatial Rendering mode changed or the Default device changed
+				// 
+				// We try to detect if that is the case here, and if so we reset everything 
+				// and try to initialize ISAC again. Meanwhile, rendering will be handled by Unity
+				hr = g_SpatialAudioStream->Reset();
+
+				if (FAILED(hr))
+				{
+					g_SpatialAudioClientCreated = FALSE;
+
+					for (std::list<UnityAudioData*>::iterator iter = g_UnityAudioObjectQueue.begin(); iter != g_UnityAudioObjectQueue.end(); iter++)
+					{
+						UnityAudioData *p_ObjData = *iter;
+
+						p_ObjData->m_InQueue = FALSE;
+					}
+
+					g_UnityAudioObjectQueue.clear();
+
+					g_SpatialAudioClientCreated = InitializeSpatialAudioClient(g_SystemSampleRate, FALSE);
+				}
 				continue;
 			}
 			
@@ -194,6 +222,11 @@ namespace MSHRTFSpatializer
 
 			// Copy data over to ISAC within a Begin/EndUpdatingAudioObjects() block
 			hr = g_SpatialAudioStream->BeginUpdatingAudioObjects( &AvailableObjectCount, &FrameCount);
+			if (FAILED(hr))
+			{
+				continue;
+			}
+
 			{
 				// Go through the local copy of the g_UnityAudioObjectQueue and copy data to ISAC Objects
 				for (std::list<UnityAudioData*>::iterator iter = LocalCopyOfQueue.begin(); iter != LocalCopyOfQueue.end(); iter++)
@@ -219,7 +252,7 @@ namespace MSHRTFSpatializer
 					}
 
 					BOOL IsActive = FALSE;
-					p_ObjISAC->IsActive(&IsActive);
+					hr = p_ObjISAC->IsActive(&IsActive);
 					if (!IsActive)
 					{
 						p_ObjISAC = nullptr;
@@ -231,62 +264,76 @@ namespace MSHRTFSpatializer
 						}
 					}
 
+					// We use circular buffers to sync between Unity and ISAC; if the buffer circled back, take that into account
+					UINT32 ActualWriteIndex;
 					DWORD dwWaitResultIn = WaitForSingleObject(p_ObjData->m_Lock, INFINITE);
 						if (dwWaitResultIn == WAIT_OBJECT_0)
 						{
-							// We use circular buffers to sync between Unity and ISAC; if the buffer circled back, take that into account
-							UINT32 ActualWriteIndex = p_ObjData->m_WriteIndexOverflowed ? p_ObjData->m_WriteIndex + ISAC_CALLBACK_BUF_SIZE : p_ObjData->m_WriteIndex;
-							BOOL enoughData = ((float)ActualWriteIndex - (float)p_ObjData->m_ReadIndex) >= (float)ISACFRAMECOUNTPERPUMP;
-
-							//Get the object buffer
-							BYTE* p_ISACObjBuffer = nullptr;
-							UINT32 ByteCount;
-							hr = p_ObjISAC->GetBuffer(&p_ISACObjBuffer, &ByteCount);
-							if (FAILED(hr))
-							{
-								continue;
-							}
-
-							p_ObjISAC->SetPosition(p_ObjData->m_DataPosX[p_ObjData->m_ReadIndex],
-												   p_ObjData->m_DataPosY[p_ObjData->m_ReadIndex],
-												   p_ObjData->m_DataPosZ[p_ObjData->m_ReadIndex]);
-
-							p_ObjISAC->SetVolume(1.0f);
-
-							if (enoughData)
-							{
-								for (UINT32 inx = 0; inx < ISACFRAMECOUNTPERPUMP; inx++)
-								{
-									//*((float*)buffer) = 0.0f;
-									*((float*)p_ISACObjBuffer) = p_ObjData->m_DataBuf[p_ObjData->m_ReadIndex];
-									p_ISACObjBuffer += sizeof(float); // this is a BYTE array and we filled it up with a float
-
-									p_ObjData->m_ReadIndex++;
-									if (p_ObjData->m_ReadIndex >= ISAC_CALLBACK_BUF_SIZE)
-									{
-										p_ObjData->m_ReadIndex -= ISAC_CALLBACK_BUF_SIZE;
-										p_ObjData->m_WriteIndexOverflowed = FALSE;
-									}
-								}
-							}
-							else
-							{
-								p_ObjData->m_EmptyCount++;
-
-								if (p_ObjData->m_EmptyCount == EMPTY_COUNT_LIMIT)
-								{
-									RemoveQueue.push_back(p_ObjData);
-								}
-
-								// fill with silence
-								for (UINT32 inx = 0; inx < ISACFRAMECOUNTPERPUMP; inx++)
-								{
-									*((float*)p_ISACObjBuffer) = 0.0f;
-									p_ISACObjBuffer += sizeof(float);
-								}
-							}
+							ActualWriteIndex = p_ObjData->m_WriteIndexOverflowed ? p_ObjData->m_WriteIndex + ISAC_CALLBACK_BUF_SIZE : p_ObjData->m_WriteIndex;
 						}
 					ReleaseMutex(p_ObjData->m_Lock);
+
+					BOOL EnoughData = ((float)ActualWriteIndex - (float)p_ObjData->m_ReadIndex) >= 2*(float)ISACFRAMECOUNTPERPUMP;
+
+					//Get the object buffer
+					BYTE* p_ISACObjBuffer = nullptr;
+					UINT32 ByteCount;
+					hr = p_ObjISAC->GetBuffer(&p_ISACObjBuffer, &ByteCount);
+					if (FAILED(hr))
+					{
+						continue;
+					}
+
+					p_ObjISAC->SetPosition(p_ObjData->m_DataPosX[p_ObjData->m_ReadIndex],
+											p_ObjData->m_DataPosY[p_ObjData->m_ReadIndex],
+											p_ObjData->m_DataPosZ[p_ObjData->m_ReadIndex]);
+
+					p_ObjISAC->SetVolume(1.0f);
+
+					if (EnoughData)
+					{
+						for (UINT32 inx = 0; inx < ISACFRAMECOUNTPERPUMP; inx++)
+						{
+							//*((float*)buffer) = 0.0f;
+							*((float*)p_ISACObjBuffer) = p_ObjData->m_DataBuf[p_ObjData->m_ReadIndex];
+							p_ISACObjBuffer += sizeof(float); // this is a BYTE array and we filled it up with a float
+
+							p_ObjData->m_ReadIndex++;
+							if (p_ObjData->m_ReadIndex >= ISAC_CALLBACK_BUF_SIZE)
+							{
+								p_ObjData->m_ReadIndex -= ISAC_CALLBACK_BUF_SIZE;
+
+								DWORD dwWaitResultIn = WaitForSingleObject(p_ObjData->m_Lock, INFINITE);
+									if (dwWaitResultIn == WAIT_OBJECT_0)
+									{
+										p_ObjData->m_WriteIndexOverflowed = FALSE;
+									}
+								ReleaseMutex(p_ObjData->m_Lock);
+							}
+						}
+					}
+					else
+					{
+						UINT32 CurObjEmptyCount = 0;
+						DWORD dwWaitResultIn = WaitForSingleObject(p_ObjData->m_Lock, INFINITE);
+							if (dwWaitResultIn == WAIT_OBJECT_0)
+							{
+								CurObjEmptyCount = ++(p_ObjData->m_EmptyCount);
+							}
+						ReleaseMutex(p_ObjData->m_Lock);
+
+						if (CurObjEmptyCount == EMPTY_COUNT_LIMIT)
+						{
+							RemoveQueue.push_back(p_ObjData);
+						}
+
+						// fill with silence
+						for (UINT32 inx = 0; inx < ISACFRAMECOUNTPERPUMP; inx++)
+						{
+							*((float*)p_ISACObjBuffer) = 0.0f;
+							p_ISACObjBuffer += sizeof(float);
+						}
+					}
 				}
 			}
 
@@ -569,12 +616,16 @@ namespace MSHRTFSpatializer
 	};
 	ISACNotify g_notifyObj;
 
-	BOOL InitializeSpatialAudioClient(int sampleRate) 
+	BOOL InitializeSpatialAudioClient(int sampleRate, BOOL createWorkerThread) 
 	{
 		IMMDevice* p_Device = NULL;
 		IMMDeviceEnumerator* p_Enumerator = NULL;
 		HRESULT hr = S_OK;
 		PROPVARIANT* p_ActivationParams = nullptr;
+
+		// Reset ISAC variables in case we are restarting ISAC
+		g_SpatialAudioClient = nullptr;
+		g_SpatialAudioStream = nullptr;
 
 		// ISAC only supports 48K at this point
 		// TODO: Add support for other sampling rates when ISAC adds support for them.
@@ -638,7 +689,7 @@ namespace MSHRTFSpatializer
 		// Ask ISAC about the maximum number of objects we can have
 		UINT32 MaxNumISACObjects = 0;
 		hr = g_SpatialAudioClient->GetMaxDynamicObjectCount(&MaxNumISACObjects);
-		if (FAILED(hr) || MaxNumISACObjects == 0)
+		if (FAILED(hr))
 		{
 			return FALSE;
 		}
@@ -680,9 +731,12 @@ namespace MSHRTFSpatializer
 		g_FirstCreateCallback = FALSE;
 
 		/* CREATE AND START A WORKER THREAD TO LISTEN FOR ISAC EVENTS */
-		g_WorkThreadActive = TRUE;
-		g_WorkThread = CreateThreadpoolWork(SpatialWorkCallbackNew, nullptr, nullptr);
-		SubmitThreadpoolWork(g_WorkThread); 
+		if (createWorkerThread)
+		{
+			g_WorkThreadActive = TRUE;
+			g_WorkThread = CreateThreadpoolWork(SpatialWorkCallbackNew, nullptr, nullptr);
+			SubmitThreadpoolWork(g_WorkThread);
+		}
 
 		return TRUE;
 	}
@@ -738,7 +792,7 @@ namespace MSHRTFSpatializer
 				return UNITY_AUDIODSP_ERR_UNSUPPORTED;
 			}
 
-			if (!InitializeSpatialAudioClient(state->samplerate))
+			if (!InitializeSpatialAudioClient(state->samplerate, TRUE))
 			{
 				return UNITY_AUDIODSP_ERR_UNSUPPORTED;
 			}
@@ -818,6 +872,8 @@ namespace MSHRTFSpatializer
 			{
 				// Since this object has new data, revert EmptyCount back to 0
 				p_ObjData->m_EmptyCount = 0;
+			}
+			ReleaseMutex(p_ObjData->m_Lock);
 
 				// If the object isn't already in the queue, check if there's space to add it
 				if (p_ObjData->m_InQueue == FALSE)
@@ -841,8 +897,20 @@ namespace MSHRTFSpatializer
 										if (ObjectQueuedToISAC)
 										{
 											g_UnityAudioObjectQueue.push_back(p_ObjData);
-											p_ObjData->m_UnityAudioObjectQueueIter = --g_UnityAudioObjectQueue.end();
-											p_ObjData->m_InQueue = TRUE;
+											DWORD dwWaitResult = WaitForSingleObject(p_ObjData->m_Lock, INFINITE);
+											if (dwWaitResult == WAIT_OBJECT_0)
+											{
+												// Set Read and Write Indexes back to 0 in case this object was taken
+												// off queue so that ISAC doesn't render stale data.
+												p_ObjData->m_ReadIndex = 0;
+												p_ObjData->m_WriteIndex = 0;
+												p_ObjData->m_WriteIndexOverflowed = FALSE;
+												p_ObjData->m_EmptyCount = 0;
+
+												p_ObjData->m_UnityAudioObjectQueueIter = --g_UnityAudioObjectQueue.end();
+												p_ObjData->m_InQueue = TRUE;
+											}
+											ReleaseMutex(p_ObjData->m_Lock);
 
 											if (g_UnityAudioObjectQueue.size() == g_ISACObjectCount)
 											{
@@ -880,25 +948,30 @@ namespace MSHRTFSpatializer
 					float dir_y = m[1] * px + m[5] * py + m[9] * pz + m[13];
 					float dir_z = m[2] * px + m[6] * py + m[10] * pz + m[14];
 
-					for (UINT32 inx = 0; inx < length; inx++)
+					DWORD dwWaitResult = WaitForSingleObject(p_ObjData->m_Lock, INFINITE);
+					if (dwWaitResult == WAIT_OBJECT_0)
 					{
-						p_ObjData->m_WriteIndex++;
 
-						if (p_ObjData->m_WriteIndex >= ISAC_CALLBACK_BUF_SIZE)
+						for (UINT32 inx = 0; inx < length; inx++)
 						{
-							p_ObjData->m_WriteIndex -= ISAC_CALLBACK_BUF_SIZE;
-							p_ObjData->m_WriteIndexOverflowed = TRUE;
+							p_ObjData->m_WriteIndex++;
+
+							if (p_ObjData->m_WriteIndex >= ISAC_CALLBACK_BUF_SIZE)
+							{
+								p_ObjData->m_WriteIndex -= ISAC_CALLBACK_BUF_SIZE;
+								p_ObjData->m_WriteIndexOverflowed = TRUE;
+							}
+
+							p_ObjData->m_DataPosX[p_ObjData->m_WriteIndex] = dir_x;
+							p_ObjData->m_DataPosY[p_ObjData->m_WriteIndex] = dir_y;
+							p_ObjData->m_DataPosZ[p_ObjData->m_WriteIndex] = -dir_z;
+
+							p_ObjData->m_DataBuf[p_ObjData->m_WriteIndex] = inbuffer[inx * 2];
 						}
-
-						p_ObjData->m_DataPosX[p_ObjData->m_WriteIndex] = dir_x;
-						p_ObjData->m_DataPosY[p_ObjData->m_WriteIndex] = dir_y;
-						p_ObjData->m_DataPosZ[p_ObjData->m_WriteIndex] = -dir_z;
-
-						p_ObjData->m_DataBuf[p_ObjData->m_WriteIndex] = inbuffer[inx * 2];
 					}
+					ReleaseMutex(p_ObjData->m_Lock);
 				}
-			}
-		ReleaseMutex(p_ObjData->m_Lock);
+
 
 		return UNITY_AUDIODSP_OK;
 	}
