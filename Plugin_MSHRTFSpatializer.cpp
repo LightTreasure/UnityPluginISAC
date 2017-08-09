@@ -158,18 +158,20 @@ namespace MSHRTFSpatializer
 	}
 
 	// Declaration
-	BOOL InitializeSpatialAudioClient(int sampleRate, BOOL createWorkerThread);
+	BOOL InitializeSpatialAudioClient(int sampleRate);
 
 	// Function that actually sends data to ISAC. Runs in a separate thread, waits for
 	// ISAC to signal its invocation through g_ISACBufferCompletionEvent
 	VOID CALLBACK SpatialWorkCallbackNew(_Inout_ PTP_CALLBACK_INSTANCE Instance, _Inout_opt_ PVOID Context, _Inout_ PTP_WORK Work)
 	{
 		HRESULT hr = S_OK;
-		hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);	// TODO: Find out why this is needed and how this affects things.
+		//hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);	// TODO: Find out why this is needed and how this affects things.
 		
 		Work;
 		Instance;
 
+		DWORD ISACBufferCompletionMaxWaitTime = 500;
+		// At this point, ISAC has initialized and we can start sending data to it.
 		while (g_WorkThreadActive)
 		{
 			UINT32 FrameCount = 0;
@@ -177,15 +179,33 @@ namespace MSHRTFSpatializer
 			UINT32 ISACObjInx = 0;
 
 			// Wait for ISAC Event 
-			if (WaitForSingleObject(g_ISACBufferCompletionEvent, 100) != WAIT_OBJECT_0)
+			if (WaitForSingleObject(g_ISACBufferCompletionEvent, ISACBufferCompletionMaxWaitTime) != WAIT_OBJECT_0)
 			{
 				// Ideally, we should get an ISAC event every 10ms when ISAC is active.
-				// So if we don't get the event within 100 ms, we have an issue. One
-				// possibility is that the ISAC graph has been torn down because
-				// the Spatial Rendering mode changed or the Default device changed
+				// So if we don't get the event within 100 ms, we have an issue. There
+				// are three possibilities that we can do something about: 
 				// 
-				// We try to detect if that is the case here, and if so we reset everything 
-				// and try to initialize ISAC again. Meanwhile, rendering will be handled by Unity
+				// 1. ISAC hasn't been initialized yet. So we initialize it.
+				//
+				// 2. A previous ISAC initialization failed because Spatial Audio is
+				//    turned off (Spatial Rendering Mode is set to None). In this case
+				//    we want to keep trying to initialize ISAC to check if Spatial Audio
+				//    has been enabled by the user.
+				//
+				// 3. The ISAC graph was torn down because the user changed the Spatial 
+				//    Rendering mode or changed the Default device. We try to detect if 
+				//    that is the case. If so, we reset everything and try to initialize 
+				//    ISAC again. Meanwhile, rendering will be handled by Unity.
+
+				// Case 1 and 2
+				if (!g_SpatialAudioClientCreated)
+				{
+					g_SpatialAudioClientCreated = InitializeSpatialAudioClient(g_SystemSampleRate);
+					ISACBufferCompletionMaxWaitTime = 500;
+					continue;
+				}
+
+				// Case 3: If the ISAC graph was torn down, we will get an error when calling this method
 				hr = g_SpatialAudioStream->Reset();
 
 				if (FAILED(hr))
@@ -201,7 +221,12 @@ namespace MSHRTFSpatializer
 
 					g_UnityAudioObjectQueue.clear();
 
-					g_SpatialAudioClientCreated = InitializeSpatialAudioClient(g_SystemSampleRate, FALSE);
+					g_SpatialAudioClientCreated = InitializeSpatialAudioClient(g_SystemSampleRate);
+
+					if (g_SpatialAudioClientCreated)
+					{
+						ISACBufferCompletionMaxWaitTime = 100;
+					}
 				}
 				continue;
 			}
@@ -210,7 +235,7 @@ namespace MSHRTFSpatializer
 			// we put it into this temporary Queue and remove it later in this function.
 			std::list<UnityAudioData *> RemoveQueue;
 
-			// In order to not hold the g_UnityAudioObjectQueue locked down, we just make a copy of it
+			// In order to not hold down the g_UnityAudioObjectQueue lock for too long, we just make a copy of it
 			// locally and render using that.
 			std::list<UnityAudioData *> LocalCopyOfQueue;
 			DWORD dwWaitResult = WaitForSingleObject(g_UnityAudioObjectQueueMutex, INFINITE);
@@ -616,7 +641,7 @@ namespace MSHRTFSpatializer
 	};
 	ISACNotify g_notifyObj;
 
-	BOOL InitializeSpatialAudioClient(int sampleRate, BOOL createWorkerThread) 
+	BOOL InitializeSpatialAudioClient(int sampleRate) 
 	{
 		IMMDevice* p_Device = NULL;
 		IMMDeviceEnumerator* p_Enumerator = NULL;
@@ -683,9 +708,6 @@ namespace MSHRTFSpatializer
 			return FALSE;
 		}
 
-		// Create the event that will be used to signal the client for more data
-		g_ISACBufferCompletionEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-
 		// Ask ISAC about the maximum number of objects we can have
 		UINT32 MaxNumISACObjects = 0;
 		hr = g_SpatialAudioClient->GetMaxDynamicObjectCount(&MaxNumISACObjects);
@@ -711,12 +733,7 @@ namespace MSHRTFSpatializer
 		ActivateParams.blob.cbSize = sizeof(Params);
 		ActivateParams.blob.pBlobData = reinterpret_cast<BYTE*>(&Params);
 
-		hr = g_SpatialAudioClient->ActivateSpatialAudioStream(
-			&ActivateParams,
-			__uuidof(ISpatialAudioObjectRenderStream),
-			&g_SpatialAudioStream
-		);
-
+		hr = g_SpatialAudioClient->ActivateSpatialAudioStream(&ActivateParams, __uuidof(ISpatialAudioObjectRenderStream), &g_SpatialAudioStream);
 		if (FAILED(hr))
 		{
 			return FALSE;
@@ -726,16 +743,6 @@ namespace MSHRTFSpatializer
 		if (FAILED(hr))
 		{
 			return FALSE;
-		}
-		
-		g_FirstCreateCallback = FALSE;
-
-		/* CREATE AND START A WORKER THREAD TO LISTEN FOR ISAC EVENTS */
-		if (createWorkerThread)
-		{
-			g_WorkThreadActive = TRUE;
-			g_WorkThread = CreateThreadpoolWork(SpatialWorkCallbackNew, nullptr, nullptr);
-			SubmitThreadpoolWork(g_WorkThread);
 		}
 
 		return TRUE;
@@ -777,7 +784,8 @@ namespace MSHRTFSpatializer
 		if (IsHostCompatible(state))
 			state->spatializerdata->distanceattenuationcallback = DistanceAttenuationCallback;
 
-		// If ISAC hasn't been initialized yet, initialize it and start the ISAC worker thread
+		// If this is the first ever create callback, we need to initialize some stuff in order
+		// for ISAC to work. This includes creating mutexes and starting the Spatial Work thread.
 		if (g_FirstCreateCallback)	
 		{
 			g_UnityAudioObjectQueueMutex = CreateMutex(NULL, FALSE, NULL);
@@ -792,12 +800,17 @@ namespace MSHRTFSpatializer
 				return UNITY_AUDIODSP_ERR_UNSUPPORTED;
 			}
 
-			if (!InitializeSpatialAudioClient(state->samplerate, TRUE))
-			{
-				return UNITY_AUDIODSP_ERR_UNSUPPORTED;
-			}
+			g_SystemSampleRate = state->samplerate;
 
-			g_SpatialAudioClientCreated = TRUE;
+			// Create event used to signal the worker thread for more data.
+			g_ISACBufferCompletionEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+
+			// Create the Spatial Work thread. This also takes care of initializing ISAC for us.
+			g_WorkThreadActive = TRUE;
+			g_WorkThread = CreateThreadpoolWork(SpatialWorkCallbackNew, nullptr, nullptr);
+			SubmitThreadpoolWork(g_WorkThread);
+
+			g_FirstCreateCallback = FALSE;
 		}
 
 		return UNITY_AUDIODSP_OK;
