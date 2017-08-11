@@ -165,7 +165,7 @@ namespace MSHRTFSpatializer
 	VOID CALLBACK SpatialWorkCallbackNew(_Inout_ PTP_CALLBACK_INSTANCE Instance, _Inout_opt_ PVOID Context, _Inout_ PTP_WORK Work)
 	{
 		HRESULT hr = S_OK;
-		//hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);	// TODO: Find out why this is needed and how this affects things.
+		hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);	// TODO: Find out why this is needed and how this affects things.
 		
 		Work;
 		Instance;
