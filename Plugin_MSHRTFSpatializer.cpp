@@ -136,6 +136,8 @@ namespace MSHRTFSpatializer
 	// Indicates if ISAC is up and running
 	BOOL g_SpatialAudioClientCreated = FALSE;
 
+	BOOL g_SpatialAudioRenderStreamCreated = FALSE;
+
 	// Worker thread for ISpatialAudioClient work
 	PTP_WORK g_WorkThread;
 	BOOL g_WorkThreadActive = FALSE;
@@ -159,6 +161,7 @@ namespace MSHRTFSpatializer
 
 	// Declaration
 	BOOL InitializeSpatialAudioClient(int sampleRate);
+	BOOL CreateSpatialAudioRenderStream();
 
 	// Function that actually sends data to ISAC. Runs in a separate thread, waits for
 	// ISAC to signal its invocation through g_ISACBufferCompletionEvent
@@ -170,7 +173,7 @@ namespace MSHRTFSpatializer
 		Work;
 		Instance;
 
-		DWORD ISACBufferCompletionMaxWaitTime = 500;
+		DWORD ISACBufferCompletionMaxWaitTime = 100;
 		// At this point, ISAC has initialized and we can start sending data to it.
 		while (g_WorkThreadActive)
 		{
@@ -187,9 +190,9 @@ namespace MSHRTFSpatializer
 				// 
 				// 1. ISAC hasn't been initialized yet. So we initialize it.
 				//
-				// 2. A previous ISAC initialization failed because Spatial Audio is
+				// 2. ISAC Render stream initialization failed because Spatial Audio is
 				//    turned off (Spatial Rendering Mode is set to None). In this case
-				//    we want to keep trying to initialize ISAC to check if Spatial Audio
+				//    we want to keep trying to create the ISAC stream to check if Spatial Audio
 				//    has been enabled by the user.
 				//
 				// 3. The ISAC graph was torn down because the user changed the Spatial 
@@ -197,11 +200,17 @@ namespace MSHRTFSpatializer
 				//    that is the case. If so, we reset everything and try to initialize 
 				//    ISAC again. Meanwhile, rendering will be handled by Unity.
 
-				// Case 1 and 2
+				// Case 1
 				if (!g_SpatialAudioClientCreated)
 				{
 					g_SpatialAudioClientCreated = InitializeSpatialAudioClient(g_SystemSampleRate);
-					ISACBufferCompletionMaxWaitTime = 500;
+					continue;
+				}
+
+				// Case 2
+				if (!g_SpatialAudioRenderStreamCreated)
+				{
+					g_SpatialAudioRenderStreamCreated = CreateSpatialAudioRenderStream();
 					continue;
 				}
 
@@ -210,7 +219,7 @@ namespace MSHRTFSpatializer
 
 				if (FAILED(hr))
 				{
-					g_SpatialAudioClientCreated = FALSE;
+					g_SpatialAudioRenderStreamCreated = FALSE;
 
 					for (std::list<UnityAudioData*>::iterator iter = g_UnityAudioObjectQueue.begin(); iter != g_UnityAudioObjectQueue.end(); iter++)
 					{
@@ -221,9 +230,9 @@ namespace MSHRTFSpatializer
 
 					g_UnityAudioObjectQueue.clear();
 
-					g_SpatialAudioClientCreated = InitializeSpatialAudioClient(g_SystemSampleRate);
+					g_SpatialAudioRenderStreamCreated = CreateSpatialAudioRenderStream();
 
-					if (g_SpatialAudioClientCreated)
+					if (g_SpatialAudioRenderStreamCreated)
 					{
 						ISACBufferCompletionMaxWaitTime = 100;
 					}
@@ -683,7 +692,19 @@ namespace MSHRTFSpatializer
 			// Spatial Audio Client creation failed
 			return FALSE;
 		}
- 
+
+		return TRUE;
+	}
+
+	BOOL CreateSpatialAudioRenderStream()
+	{
+		HRESULT hr = S_OK;
+
+		if (g_SpatialAudioClient == nullptr)
+		{
+			return FALSE;
+		}
+
 		// Check the available rendering formats 
 		ComPtr<IAudioFormatEnumerator> AudioObjectFormatEnumerator;
 		hr = g_SpatialAudioClient->GetSupportedAudioObjectFormatEnumerator(&AudioObjectFormatEnumerator);
@@ -716,12 +737,18 @@ namespace MSHRTFSpatializer
 			return FALSE;
 		}
 
+		// This means Spatial Audio is turned off on this endpoint, return failure
+		if (MaxNumISACObjects == 0)
+		{
+			return FALSE;
+		}
+
 		g_ISACObjectVector.resize(MaxNumISACObjects, nullptr);
 
 		SpatialAudioObjectRenderStreamActivationParams Params = {};
 		Params.Category = AudioCategory_GameEffects;
 		Params.EventHandle = g_ISACBufferCompletionEvent;
-		Params.MinDynamicObjectCount = (UINT32) (0.2f * (float)MaxNumISACObjects);		// set minimum to 20% of max
+		Params.MinDynamicObjectCount = (UINT32)(0.2f * (float)MaxNumISACObjects);		// set minimum to 20% of max
 		Params.MaxDynamicObjectCount = MaxNumISACObjects;
 		Params.NotifyObject = &g_notifyObj;
 		Params.ObjectFormat = p_ObjectFormat;
@@ -870,7 +897,7 @@ namespace MSHRTFSpatializer
 	UNITY_AUDIODSP_RESULT UNITY_AUDIODSP_CALLBACK ProcessCallback(UnityAudioEffectState* state, float* inbuffer, float* outbuffer, unsigned int length, int inchannels, int outchannels)
 	{
 		// If ISAC hasn't been initialized yet, or if the provided data doesn't meet ISAC's requirements, just pass it back to Unity
-		if (g_SpatialAudioClientCreated != TRUE || inchannels != 2 || outchannels != 2 || g_SystemSampleRate != REQUIRED_SAMPLE_RATE)
+		if (g_SpatialAudioClientCreated != TRUE || g_SpatialAudioRenderStreamCreated != TRUE || inchannels != 2 || outchannels != 2 || g_SystemSampleRate != REQUIRED_SAMPLE_RATE)
 		{
 			memcpy(outbuffer, inbuffer, length * outchannels * sizeof(float));
 			return UNITY_AUDIODSP_ERR_UNSUPPORTED;
