@@ -230,6 +230,8 @@ namespace MSHRTFSpatializer
 
 					g_UnityAudioObjectQueue.clear();
 
+					g_SpatialAudioClientCreated = InitializeSpatialAudioClient(g_SystemSampleRate);
+
 					g_SpatialAudioRenderStreamCreated = CreateSpatialAudioRenderStream();
 
 					if (g_SpatialAudioRenderStreamCreated)
